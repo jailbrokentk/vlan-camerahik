@@ -87,7 +87,12 @@ public:
         if (isHooked || !targetFunc || !hookFunc) return;
         
         DWORD oldProtect;
-        VirtualProtect(targetFunc, 12, PAGE_EXECUTE_READWRITE, &oldProtect);
+#ifdef _WIN64
+        DWORD size = 12;
+#else
+        DWORD size = 5;
+#endif
+        VirtualProtect(targetFunc, size, PAGE_EXECUTE_READWRITE, &oldProtect);
 
         // Lưu 5 byte gốc (hoặc 12 byte đối với x64)
 #ifdef _WIN64
@@ -105,7 +110,7 @@ public:
         memcpy(targetFunc, jmpBytes, 5);
 #endif
 
-        VirtualProtect(targetFunc, 12, oldProtect, &oldProtect);
+        VirtualProtect(targetFunc, size, oldProtect, &oldProtect);
         isHooked = true;
     }
 
@@ -113,13 +118,18 @@ public:
         if (!isHooked || !targetFunc) return;
 
         DWORD oldProtect;
-        VirtualProtect(targetFunc, 12, PAGE_EXECUTE_READWRITE, &oldProtect);
+#ifdef _WIN64
+        DWORD size = 12;
+#else
+        DWORD size = 5;
+#endif
+        VirtualProtect(targetFunc, size, PAGE_EXECUTE_READWRITE, &oldProtect);
 #ifdef _WIN64
         memcpy(targetFunc, originalBytes, 12);
 #else
         memcpy(targetFunc, originalBytes, 5);
 #endif
-        VirtualProtect(targetFunc, 12, oldProtect, &oldProtect);
+        VirtualProtect(targetFunc, size, oldProtect, &oldProtect);
         isHooked = false;
     }
 };
@@ -424,17 +434,41 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
     return 0;
 }
 
+// Cấu trúc Hook GetCommandLineW trì hoãn (Loader Lock Bypass)
+typedef LPTSTR(WINAPI* LPFN_GetCommandLineW)();
+LPFN_GetCommandLineW g_orig_GetCommandLineW = nullptr;
+InlineHook g_hookGetCommandLineW;
+bool g_isInitialized = false;
+
+LPTSTR WINAPI Hooked_GetCommandLineW() {
+    g_hookGetCommandLineW.Unhook();
+    LPTSTR result = g_orig_GetCommandLineW();
+    
+    // Khởi tạo luồng cài đặt hook một cách an sau khi thoát khỏi Loader Lock
+    if (!g_isInitialized) {
+        g_isInitialized = true;
+        g_mainThreadId = GetCurrentThreadId(); // Lấy đúng ID luồng UI chính tại đây!
+        CreateThread(NULL, 0, HookInitThread, NULL, 0, NULL);
+    }
+    return result;
+}
+
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
-            // Khi DLL được nạp qua LoadLibrary ở luồng chính (suspended thread của iVMS Lite)
-            // thì GetCurrentThreadId() chính là Thread ID của luồng UI chính.
-            g_mainThreadId = GetCurrentThreadId();
             DisableThreadLibraryCalls(hModule);
-            CreateThread(NULL, 0, HookInitThread, NULL, 0, NULL);
+
+            // Hook hàm GetCommandLineW để trì hoãn khởi tạo, tránh Loader Lock Deadlock
+            HMODULE hKernel = GetModuleHandleA("kernel32.dll");
+            g_orig_GetCommandLineW = (LPFN_GetCommandLineW)GetProcAddress(hKernel, "GetCommandLineW");
+            if (g_orig_GetCommandLineW) {
+                g_hookGetCommandLineW.Setup((void*)g_orig_GetCommandLineW, (void*)Hooked_GetCommandLineW);
+                g_hookGetCommandLineW.Hook();
+            }
             break;
         }
         case DLL_PROCESS_DETACH: {
+            g_hookGetCommandLineW.Unhook();
             if (g_hMouseHook) {
                 UnhookWindowsHookEx(g_hMouseHook);
             }
