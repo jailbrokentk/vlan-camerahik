@@ -10,6 +10,11 @@ if(MSVC)
     add_link_options(/DYNAMICBASE /NXCOMPAT)
 endif()
 
+# Configure GCC/MinGW static linking to prevent missing runtime DLL errors
+if(CMAKE_COMPILER_IS_GNUCXX OR CMAKE_CXX_COMPILER_ID MATCHES "GNU")
+    add_link_options(-static -static-libgcc -static-libstdc++)
+endif()
+
 # 1. Target: iVMS_Popout (Patch DLL)
 add_library(iVMS_Popout SHARED dllmain.cpp)
 target_link_libraries(iVMS_Popout PRIVATE
