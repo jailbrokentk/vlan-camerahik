@@ -250,6 +250,13 @@ HHOOK g_hMouseHook = NULL;
 DWORD g_mainThreadId = 0;
 bool g_isSimulatingRightClick = false;
 
+// Thread function để reset flag giả lập click chuột phải
+static DWORD WINAPI ResetRightClickFlagThread(LPVOID lp) {
+    Sleep(100);
+    g_isSimulatingRightClick = false;
+    return 0;
+}
+
 // Windows Mouse Hook Callback để bắt click chuột phải trên ô camera
 LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
@@ -316,11 +323,7 @@ LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
                     PostMessageW(hwnd, WM_RBUTTONUP, 0, MAKELPARAM(localPt.x, localPt.y));
                     
                     // Reset cờ giả lập sau 100ms
-                    CreateThread(NULL, 0, [](LPVOID lp) -> DWORD {
-                        Sleep(100);
-                        g_isSimulatingRightClick = false;
-                        return 0;
-                    }, NULL, 0, NULL);
+                    CreateThread(NULL, 0, ResetRightClickFlagThread, NULL, 0, NULL);
                 }
             }
         }

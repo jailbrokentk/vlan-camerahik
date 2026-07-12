@@ -94,7 +94,10 @@ int main() {
         }
     }
 
+    std::wstring appDir = appPath.substr(0, appPath.find_last_of(L"\\/"));
+
     std::wcout << L"[Launcher] Target App: " << appPath << std::endl;
+    std::wcout << L"[Launcher] Working Dir: " << appDir << std::endl;
     std::wcout << L"[Launcher] Patch DLL: " << dllPath << std::endl;
 
     // Khởi động iVMS-4200 Lite ở chế độ SUSPENDED (treo) để inject DLL trước khi nó chạy code chính
@@ -109,7 +112,7 @@ int main() {
         FALSE,
         CREATE_SUSPENDED,
         NULL,
-        NULL,
+        appDir.c_str(), // Thiết lập Working Directory chính xác của ứng dụng con
         &si,
         &pi
     );

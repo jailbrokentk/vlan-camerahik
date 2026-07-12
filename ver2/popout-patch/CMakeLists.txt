@@ -30,6 +30,11 @@ target_link_libraries(BitrateLauncher PRIVATE
     kernel32
     advapi32
 )
+if(MSVC)
+    set_target_properties(BitrateLauncher PROPERTIES
+        LINK_FLAGS "/MANIFESTUAC:\"level='requireAdministrator' uiAccess='false'\""
+    )
+endif()
 
 # Output directories configuration
 set_target_properties(iVMS_Popout PROPERTIES
