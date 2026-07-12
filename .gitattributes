@@ -1,0 +1,17 @@
+# GitHub Linguist overrides
+# Force GitHub to recognize this project as JavaScript
+
+# Mark vendored/generated files
+package-lock.json linguist-generated=true
+native-engine/** linguist-vendored=true
+scratch/** linguist-vendored=true
+resources/** linguist-vendored=true
+build/** linguist-vendored=true
+public/** linguist-vendored=true
+
+# Ensure correct language detection
+*.js linguist-language=JavaScript
+*.jsx linguist-language=JavaScript
+*.mjs linguist-language=JavaScript
+*.cpp linguist-language=C++
+*.css linguist-language=CSS

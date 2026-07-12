@@ -1,0 +1,65 @@
+# Dependency directories
+node_modules/
+native-engine/target/
+
+# Build outputs
+dist/
+dist-electron/
+build/
+bin/
+
+# IDE / Editor files
+.vscode/
+.idea/
+*.suo
+*.ntvsca
+*.njsproj
+*.sln
+*.swp
+
+# OS files
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+
+# Local configs and logs
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# Local config database
+config.json
+ivms_project.zip
+
+# SDK proprietary files and temp folders
+EN-HCNetSDKV6.1.9.48_build20230410_win64.zip
+sdk_temp/
+hcnet-addon/include/
+hcnet-addon/lib/
+hcnet-addon/build/
+resources/sdk/
+hcnet-addon/package-lock.json
+
+# OpenClaw / AutoClaw agent workspace files
+.openclaw/
+.openclaw-attachments/
+memory/
+evolution-drafts/
+AGENTS.md
+SOUL.md
+USER.md
+IDENTITY.md
+TOOLS.md
+HEARTBEAT.md
+*_PROMPT.md
+
+# User research directories
+ivmslite/
+ivmspro/
+ver2/

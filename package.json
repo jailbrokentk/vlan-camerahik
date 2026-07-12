@@ -1,0 +1,84 @@
+{
+  "name": "vlan-camerahik",
+  "version": "1.0.0",
+  "description": "vLAN-CameraHIK Camera Surveillance Software",
+  "main": "electron/main.js",
+  "scripts": {
+    "dev": "concurrently \"vite --host\" \"node server.js\"",
+    "dev:electron": "concurrently \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "native:configure": "cd hcnet-addon && npx cmake-js configure --runtime=electron --runtime-version=33.4.11 --arch=x64",
+    "native:build": "cd hcnet-addon && npx cmake-js build --runtime=electron --runtime-version=33.4.11 --arch=x64",
+    "native:clean": "cd hcnet-addon && npx cmake-js clean",
+    "native:rebuild": "npm run native:clean && npm run native:configure && npm run native:build",
+    "build:renderer": "vite build",
+    "build:debug-renderer": "vite build --mode debug",
+    "build": "npm run build:renderer && electron-builder",
+    "dist:win": "npm run native:rebuild && npm run build:renderer && electron-builder --win --x64",
+    "dist:win-debug": "npm run native:rebuild && npm run build:debug-renderer && electron-builder --win --x64",
+    "preview": "vite preview"
+  },
+  "dependencies": {
+    "axios": "^1.7.9",
+    "cors": "^2.8.6",
+    "date-fns": "^4.1.0",
+    "digest-fetch": "^3.1.1",
+    "express": "^4.22.2",
+    "fast-xml-parser": "^5.9.3",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1",
+    "react-router-dom": "^6.28.1",
+    "zustand": "^5.0.3"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.18",
+    "@types/react-dom": "^18.3.5",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.2",
+    "electron": "^33.4.0",
+    "electron-builder": "^25.1.8",
+    "typescript": "^5.7.3",
+    "vite": "^6.0.11",
+    "wait-on": "^8.0.1"
+  },
+  "build": {
+    "appId": "com.vlancamerahik.app",
+    "productName": "vLAN-CameraHIK",
+    "publish": null,
+    "electronLanguages": ["en-US", "vi"],
+    "win": {
+      "target": "nsis",
+      "icon": "resources/icon.png"
+    },
+    "nsis": {
+      "oneClick": true,
+      "perMachine": false,
+      "deleteAppDataOnUninstall": true,
+      "include": "build/installer.nsh"
+    },
+    "extraResources": [
+      {
+        "from": "native-engine/target/release/native-engine.exe",
+        "to": "native-engine.exe"
+      },
+      {
+        "from": "hcnet-addon/build/Release/hcnet-addon.node",
+        "to": "native/hcnet-addon.node"
+      }
+    ],
+    "extraFiles": [
+      {
+        "from": "resources/sdk",
+        "to": "."
+      }
+    ],
+    "files": [
+      "dist/index.html",
+      "dist/assets/**/*",
+      "dist/favicon.ico",
+      "dist/favicon.png",
+      "dist/favicon.svg",
+      "dist/player.html",
+      "electron/**/*"
+    ]
+  }
+}

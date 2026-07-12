@@ -1,0 +1,18 @@
+{
+  "name": "hcnet-addon",
+  "version": "1.0.0",
+  "description": "Node-API wrapper for Hikvision HCNetSDK and PlayM4",
+  "main": "build/Release/hcnet-addon.node",
+  "private": true,
+  "scripts": {
+    "install": "cmake-js compile",
+    "compile": "cmake-js compile",
+    "clean": "cmake-js clean"
+  },
+  "dependencies": {
+    "node-addon-api": "^8.0.0"
+  },
+  "devDependencies": {
+    "cmake-js": "^7.3.0"
+  }
+}
