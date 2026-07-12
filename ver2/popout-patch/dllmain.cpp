@@ -197,8 +197,6 @@ public:
                 return 0;
             }
             case WM_SIZE: {
-                // Tự động điều chỉnh kích thước của luồng hiển thị bên trong cửa sổ nổi
-                // (Vì SDK vẽ trực tiếp trên HWND này nên Windows tự điều chỉnh tỷ lệ)
                 return 0;
             }
         }
@@ -247,6 +245,91 @@ void OpenPopoutWindow(const DeviceInfo& dev, const StreamInfo& stream) {
     player->previewHandle = g_orig_RealPlay(stream.userId, &previewInfo, NULL, NULL);
 }
 
+// Global variables cho Message Hook
+HHOOK g_hGetMsgHook = NULL;
+bool g_isSimulatingRightClick = false;
+
+// Windows Message Hook Callback để chèn Context Menu khi click chuột phải lên ô camera
+LRESULT CALLBACK GetMsgProc(int code, WPARAM wp, LPARAM lp) {
+    if (code >= 0) {
+        MSG* pMsg = (MSG*)lp;
+        if ((pMsg->message == WM_RBUTTONUP || pMsg->message == WM_CONTEXTMENU) && !g_isSimulatingRightClick) {
+            HWND hwnd = pMsg->hwnd;
+            LONG targetHandle = -1;
+            StreamInfo targetStream;
+            bool found = false;
+
+            // Xác định xem HWND nhận click chuột phải có thuộc về một ô camera nào đang phát không
+            {
+                std::lock_guard<std::mutex> lock(g_dataMutex);
+                for (const auto& pair : g_streamMap) {
+                    HWND parent = hwnd;
+                    while (parent) {
+                        if (parent == pair.second.hPlayWnd) {
+                            targetHandle = pair.first;
+                            targetStream = pair.second;
+                            found = true;
+                            break;
+                        }
+                        parent = GetParent(parent);
+                    }
+                    if (found) break;
+                }
+            }
+
+            if (found) {
+                // Chặn thông điệp chuột phải gốc của Qt
+                pMsg->message = WM_NULL;
+
+                // Lấy vị trí trỏ chuột hiện tại
+                POINT pt;
+                GetCursorPos(&pt);
+
+                // Tạo menu popup Win32 của chúng ta
+                HMENU hMenu = CreatePopupMenu();
+                AppendMenuW(hMenu, MF_STRING, 1001, L"Tách cửa sổ nổi (Popout Window)");
+                AppendMenuW(hMenu, MF_SEPARATOR, 0, NULL);
+                AppendMenuW(hMenu, MF_STRING, 1002, L"Menu gốc iVMS-4200 Lite");
+
+                // Hiển thị và theo dõi tương tác menu
+                int selection = TrackPopupMenu(hMenu, TPM_RETURNCMD | TPM_LEFTALIGN | TPM_RIGHTBUTTON, pt.x, pt.y, 0, hwnd, NULL);
+                DestroyMenu(hMenu);
+
+                if (selection == 1001) {
+                    DeviceInfo dev;
+                    bool devFound = false;
+                    {
+                        std::lock_guard<std::mutex> lock(g_dataMutex);
+                        auto it = g_deviceMap.find(targetStream.userId);
+                        if (it != g_deviceMap.end()) {
+                            dev = it->second;
+                            devFound = true;
+                        }
+                    }
+                    if (devFound) {
+                        OpenPopoutWindow(dev, targetStream);
+                    }
+                } else if (selection == 1002) {
+                    // Giả lập gửi lại click chuột phải để Qt hiện menu gốc của iVMS Lite
+                    g_isSimulatingRightClick = true;
+                    POINT localPt = pt;
+                    ScreenToClient(hwnd, &localPt);
+                    PostMessageW(hwnd, WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(localPt.x, localPt.y));
+                    PostMessageW(hwnd, WM_RBUTTONUP, 0, MAKELPARAM(localPt.x, localPt.y));
+                    
+                    // Reset cờ giả lập sau 100ms
+                    CreateThread(NULL, 0, [](LPVOID lp) -> DWORD {
+                        Sleep(100);
+                        g_isSimulatingRightClick = false;
+                        return 0;
+                    }, NULL, 0, NULL);
+                }
+            }
+        }
+    }
+    return CallNextHookEx(g_hGetMsgHook, code, wp, lp);
+}
+
 // Thread nền theo dõi Phím nóng (Hotkey) để trigger Popout
 DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
     // Đăng ký Hotkey toàn cục cho tiến trình: Ctrl + Shift + P
@@ -255,21 +338,17 @@ DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
     MSG msg = { 0 };
     while (GetMessage(&msg, NULL, 0, 0)) {
         if (msg.message == WM_HOTKEY && msg.wParam == 1) {
-            // Khi người dùng bấm Ctrl + Shift + P:
-            // 1. Tìm cửa sổ con Win32 đang được hover dưới trỏ chuột
             POINT pt;
             GetCursorPos(&pt);
             HWND hwndUnderCursor = WindowFromPoint(pt);
 
             if (hwndUnderCursor) {
-                // 2. Tìm xem HWND này có khớp với ô camera nào đang phát trong iVMS Lite không
                 LONG targetHandle = -1;
                 StreamInfo targetStream;
                 bool found = false;
 
                 {
                     std::lock_guard<std::mutex> lock(g_dataMutex);
-                    // Lần lượt kiểm tra xem HWND dưới chuột có khớp với stream active nào không
                     for (const auto& pair : g_streamMap) {
                         HWND parent = hwndUnderCursor;
                         while (parent) {
@@ -285,7 +364,6 @@ DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
                     }
                 }
 
-                // 3. Nếu tìm thấy camera đang phát, tiến hành mở cửa sổ nổi Popout!
                 if (found) {
                     DeviceInfo dev;
                     bool devFound = false;
@@ -335,6 +413,9 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
         g_hookStopRealPlay.Hook();
     }
 
+    // Đăng ký Windows Message Hook để bắt sự kiện chuột phải trên ô camera
+    g_hGetMsgHook = SetWindowsHookEx(WH_GETMESSAGE, GetMsgProc, NULL, GetCurrentThreadId());
+
     // Khởi chạy thread giám sát hotkey
     CreateThread(NULL, 0, HotkeyMonitorThread, NULL, 0, NULL);
     return 0;
@@ -348,6 +429,9 @@ BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserv
             break;
         }
         case DLL_PROCESS_DETACH: {
+            if (g_hGetMsgHook) {
+                UnhookWindowsHookEx(g_hGetMsgHook);
+            }
             g_hookLogin.Unhook();
             g_hookRealPlay.Unhook();
             g_hookStopRealPlay.Unhook();
