@@ -245,16 +245,17 @@ void OpenPopoutWindow(const DeviceInfo& dev, const StreamInfo& stream) {
     player->previewHandle = g_orig_RealPlay(stream.userId, &previewInfo, NULL, NULL);
 }
 
-// Global variables cho Message Hook
-HHOOK g_hGetMsgHook = NULL;
+// Global variables cho Message Hook & Thread ID
+HHOOK g_hMouseHook = NULL;
+DWORD g_mainThreadId = 0;
 bool g_isSimulatingRightClick = false;
 
-// Windows Message Hook Callback để chèn Context Menu khi click chuột phải lên ô camera
-LRESULT CALLBACK GetMsgProc(int code, WPARAM wp, LPARAM lp) {
+// Windows Mouse Hook Callback để bắt click chuột phải trên ô camera
+LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
     if (code >= 0) {
-        MSG* pMsg = (MSG*)lp;
-        if ((pMsg->message == WM_RBUTTONUP || pMsg->message == WM_CONTEXTMENU) && !g_isSimulatingRightClick) {
-            HWND hwnd = pMsg->hwnd;
+        MOUSEHOOKSTRUCT* pMouse = (MOUSEHOOKSTRUCT*)lp;
+        if (wp == WM_RBUTTONUP && !g_isSimulatingRightClick) {
+            HWND hwnd = pMouse->hwnd;
             LONG targetHandle = -1;
             StreamInfo targetStream;
             bool found = false;
@@ -278,12 +279,8 @@ LRESULT CALLBACK GetMsgProc(int code, WPARAM wp, LPARAM lp) {
             }
 
             if (found) {
-                // Chặn thông điệp chuột phải gốc của Qt
-                pMsg->message = WM_NULL;
-
-                // Lấy vị trí trỏ chuột hiện tại
-                POINT pt;
-                GetCursorPos(&pt);
+                // Lấy vị trí trỏ chuột hiện tại (tọa độ màn hình có sẵn trong pMouse->pt)
+                POINT pt = pMouse->pt;
 
                 // Tạo menu popup Win32 của chúng ta
                 HMENU hMenu = CreatePopupMenu();
@@ -309,6 +306,7 @@ LRESULT CALLBACK GetMsgProc(int code, WPARAM wp, LPARAM lp) {
                     if (devFound) {
                         OpenPopoutWindow(dev, targetStream);
                     }
+                    return 1; // Chặn đứng thông điệp chuột phải gốc, không truyền tới Qt
                 } else if (selection == 1002) {
                     // Giả lập gửi lại click chuột phải để Qt hiện menu gốc của iVMS Lite
                     g_isSimulatingRightClick = true;
@@ -327,7 +325,7 @@ LRESULT CALLBACK GetMsgProc(int code, WPARAM wp, LPARAM lp) {
             }
         }
     }
-    return CallNextHookEx(g_hGetMsgHook, code, wp, lp);
+    return CallNextHookEx(g_hMouseHook, code, wp, lp);
 }
 
 // Thread nền theo dõi Phím nóng (Hotkey) để trigger Popout
@@ -413,8 +411,10 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
         g_hookStopRealPlay.Hook();
     }
 
-    // Đăng ký Windows Message Hook để bắt sự kiện chuột phải trên ô camera
-    g_hGetMsgHook = SetWindowsHookEx(WH_GETMESSAGE, GetMsgProc, NULL, GetCurrentThreadId());
+    // Cài đặt WH_MOUSE hook cục bộ cho luồng giao diện chính của iVMS Lite
+    if (g_mainThreadId != 0) {
+        g_hMouseHook = SetWindowsHookEx(WH_MOUSE, MouseProc, NULL, g_mainThreadId);
+    }
 
     // Khởi chạy thread giám sát hotkey
     CreateThread(NULL, 0, HotkeyMonitorThread, NULL, 0, NULL);
@@ -424,13 +424,16 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
+            // Khi DLL được nạp qua LoadLibrary ở luồng chính (suspended thread của iVMS Lite)
+            // thì GetCurrentThreadId() chính là Thread ID của luồng UI chính.
+            g_mainThreadId = GetCurrentThreadId();
             DisableThreadLibraryCalls(hModule);
             CreateThread(NULL, 0, HookInitThread, NULL, 0, NULL);
             break;
         }
         case DLL_PROCESS_DETACH: {
-            if (g_hGetMsgHook) {
-                UnhookWindowsHookEx(g_hGetMsgHook);
+            if (g_hMouseHook) {
+                UnhookWindowsHookEx(g_hMouseHook);
             }
             g_hookLogin.Unhook();
             g_hookRealPlay.Unhook();
