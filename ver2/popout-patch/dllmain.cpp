@@ -53,6 +53,7 @@ struct StreamInfo {
     LONG userId;
     LONG channel;
     DWORD streamType;
+    HWND hPlayWnd;
 };
 
 // Bản đồ lưu trữ thông tin chụp được
@@ -157,6 +158,7 @@ LONG WINAPI Hooked_NET_DVR_RealPlay_V40(LONG lUserID, NET_DVR_PREVIEWINFO* lpPre
         stream.userId = lUserID;
         stream.channel = lpPreviewInfo->lChannel;
         stream.streamType = lpPreviewInfo->dwStreamType;
+        stream.hPlayWnd = lpPreviewInfo->hPlayWnd;
         g_streamMap[handle] = stream;
     }
     return handle;
@@ -269,11 +271,9 @@ DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
                     std::lock_guard<std::mutex> lock(g_dataMutex);
                     // Lần lượt kiểm tra xem HWND dưới chuột có khớp với stream active nào không
                     for (const auto& pair : g_streamMap) {
-                        // Thống kê HWND render của SDK có thể là hwndUnderCursor hoặc cha của nó
                         HWND parent = hwndUnderCursor;
                         while (parent) {
-                            if (parent == hwndUnderCursor) { // Thực tế là check HWND khớp
-                                // (iVMS vẽ trên child window, ta lấy parent để check)
+                            if (parent == pair.second.hPlayWnd) { // Check trùng khớp HWND render của SDK
                                 targetHandle = pair.first;
                                 targetStream = pair.second;
                                 found = true;
