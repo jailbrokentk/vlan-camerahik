@@ -4,6 +4,23 @@
 #include <mutex>
 #include <vector>
 #include <iostream>
+#include <fstream>
+#include <iomanip>
+
+// Hàm ghi log file để debug quá trình thực thi
+void WriteLog(const std::string& message) {
+    std::ofstream logFile("F:\\ivms\\ivmslite\\popout_patch.log", std::ios::app);
+    if (logFile.is_open()) {
+        SYSTEMTIME lt;
+        GetLocalTime(&lt);
+        logFile << "[" << std::setw(2) << std::setfill('0') << lt.wHour << ":"
+                << std::setw(2) << std::setfill('0') << lt.wMinute << ":"
+                << std::setw(2) << std::setfill('0') << lt.wSecond << "."
+                << std::setw(3) << std::setfill('0') << lt.wMilliseconds << "] "
+                << message << "\n";
+        logFile.close();
+    }
+}
 
 // Định nghĩa cấu trúc đăng nhập của Hikvision SDK
 struct NET_DVR_USER_LOGIN_INFO {
@@ -152,6 +169,7 @@ LONG WINAPI Hooked_NET_DVR_Login_V40(NET_DVR_USER_LOGIN_INFO* pLoginInfo, void* 
         dev.username = pLoginInfo->sUserName;
         dev.password = pLoginInfo->sPassword;
         g_deviceMap[userId] = dev;
+        WriteLog("[SDK] NET_DVR_Login_V40 captured. UserID: " + std::to_string(userId) + ", IP: " + dev.ip);
     }
     return userId;
 }
@@ -170,6 +188,7 @@ LONG WINAPI Hooked_NET_DVR_RealPlay_V40(LONG lUserID, NET_DVR_PREVIEWINFO* lpPre
         stream.streamType = lpPreviewInfo->dwStreamType;
         stream.hPlayWnd = lpPreviewInfo->hPlayWnd;
         g_streamMap[handle] = stream;
+        WriteLog("[SDK] NET_DVR_RealPlay_V40 captured. Handle: " + std::to_string(handle) + ", Channel: " + std::to_string(stream.channel) + ", HWND: " + std::to_string((LONG_PTR)stream.hPlayWnd));
     }
     return handle;
 }
@@ -183,6 +202,7 @@ BOOL WINAPI Hooked_NET_DVR_StopRealPlay(LONG lRealPlayHandle) {
     if (result) {
         std::lock_guard<std::mutex> lock(g_dataMutex);
         g_streamMap.erase(lRealPlayHandle);
+        WriteLog("[SDK] NET_DVR_StopRealPlay captured. Handle: " + std::to_string(lRealPlayHandle));
     }
     return result;
 }
@@ -197,9 +217,11 @@ public:
         PopoutPlayer* self = (PopoutPlayer*)GetWindowLongPtr(hwnd, GWLP_USERDATA);
         switch (msg) {
             case WM_CLOSE: {
+                WriteLog("[Popout] Window close requested.");
                 if (self) {
                     if (self->previewHandle >= 0) {
                         g_orig_StopRealPlay(self->previewHandle);
+                        WriteLog("[Popout] Stopped preview handle: " + std::to_string(self->previewHandle));
                     }
                     delete self;
                 }
@@ -238,11 +260,16 @@ void OpenPopoutWindow(const DeviceInfo& dev, const StreamInfo& stream) {
         NULL, NULL, hInst, NULL
     );
 
-    if (!hwndPopout) return;
+    if (!hwndPopout) {
+        WriteLog("[Popout] Failed to create window.");
+        return;
+    }
 
     PopoutPlayer* player = new PopoutPlayer();
     player->hwnd = hwndPopout;
     SetWindowLongPtr(hwndPopout, GWLP_USERDATA, (LONG_PTR)player);
+
+    WriteLog("[Popout] Window created. HWND: " + std::to_string((LONG_PTR)hwndPopout));
 
     // Thiết lập thông tin preview mới cho cửa sổ nổi
     NET_DVR_PREVIEWINFO previewInfo = { 0 };
@@ -253,6 +280,7 @@ void OpenPopoutWindow(const DeviceInfo& dev, const StreamInfo& stream) {
 
     // Phát luồng camera song song trên cửa sổ nổi
     player->previewHandle = g_orig_RealPlay(stream.userId, &previewInfo, NULL, NULL);
+    WriteLog("[Popout] Started parallel preview. Handle: " + std::to_string(player->previewHandle));
 }
 
 // Global variables cho Message Hook & Thread ID
@@ -296,7 +324,7 @@ LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
             }
 
             if (found) {
-                // Lấy vị trí trỏ chuột hiện tại (tọa độ màn hình có sẵn trong pMouse->pt)
+                WriteLog("[Hook] Right-click captured on video window HWND: " + std::to_string((LONG_PTR)hwnd));
                 POINT pt = pMouse->pt;
 
                 // Tạo menu popup Win32 của chúng ta
@@ -310,6 +338,7 @@ LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
                 DestroyMenu(hMenu);
 
                 if (selection == 1001) {
+                    WriteLog("[Hook] User selected: Popout Window");
                     DeviceInfo dev;
                     bool devFound = false;
                     {
@@ -323,16 +352,15 @@ LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
                     if (devFound) {
                         OpenPopoutWindow(dev, targetStream);
                     }
-                    return 1; // Chặn đứng thông điệp chuột phải gốc, không truyền tới Qt
+                    return 1; // Chặn đứng thông điệp chuột phải gốc
                 } else if (selection == 1002) {
-                    // Giả lập gửi lại click chuột phải để Qt hiện menu gốc của iVMS Lite
+                    WriteLog("[Hook] User selected: Original iVMS Menu");
                     g_isSimulatingRightClick = true;
                     POINT localPt = pt;
                     ScreenToClient(hwnd, &localPt);
                     PostMessageW(hwnd, WM_RBUTTONDOWN, MK_RBUTTON, MAKELPARAM(localPt.x, localPt.y));
                     PostMessageW(hwnd, WM_RBUTTONUP, 0, MAKELPARAM(localPt.x, localPt.y));
                     
-                    // Reset cờ giả lập sau 100ms
                     CreateThread(NULL, 0, ResetRightClickFlagThread, NULL, 0, NULL);
                 }
             }
@@ -343,8 +371,8 @@ LRESULT CALLBACK MouseProc(int code, WPARAM wp, LPARAM lp) {
 
 // Thread nền theo dõi Phím nóng (Hotkey) để trigger Popout
 DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
-    // Đăng ký Hotkey toàn cục cho tiến trình: Ctrl + Shift + P
     RegisterHotKey(NULL, 1, MOD_CONTROL | MOD_SHIFT, 'P');
+    WriteLog("[Hotkey] Hotkey monitor registered: Ctrl+Shift+P");
 
     MSG msg = { 0 };
     while (GetMessage(&msg, NULL, 0, 0)) {
@@ -363,7 +391,7 @@ DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
                     for (const auto& pair : g_streamMap) {
                         HWND parent = hwndUnderCursor;
                         while (parent) {
-                            if (parent == pair.second.hPlayWnd) { // Check trùng khớp HWND render của SDK
+                            if (parent == pair.second.hPlayWnd) {
                                 targetHandle = pair.first;
                                 targetStream = pair.second;
                                 found = true;
@@ -376,6 +404,7 @@ DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
                 }
 
                 if (found) {
+                    WriteLog("[Hotkey] Ctrl+Shift+P triggered on camera HWND: " + std::to_string((LONG_PTR)hwndUnderCursor));
                     DeviceInfo dev;
                     bool devFound = false;
                     {
@@ -399,17 +428,18 @@ DWORD WINAPI HotkeyMonitorThread(LPVOID lpParam) {
 
 // Thread nền để quét và cài đặt Hook khi SDK DLL được nạp
 DWORD WINAPI HookInitThread(LPVOID lpParam) {
+    WriteLog("[Init] HookInitThread active. Waiting for SDK DLLs...");
     HMODULE hSDK = NULL;
     HMODULE hPlay = NULL;
 
-    // Đợi cho đến khi iVMS-4200 Lite load xong các thư viện SDK
     while (!hSDK || !hPlay) {
         hSDK = GetModuleHandleA("HCNetSDK.dll");
         hPlay = GetModuleHandleA("PlayCtrl.dll");
         Sleep(100);
     }
 
-    // Lấy địa chỉ các hàm gốc để hook
+    WriteLog("[Init] SDK loaded. Installing Inline Hooks...");
+
     g_orig_Login = (LPFN_NET_DVR_Login_V40)GetProcAddress(hSDK, "NET_DVR_Login_V40");
     g_orig_RealPlay = (LPFN_NET_DVR_RealPlay_V40)GetProcAddress(hSDK, "NET_DVR_RealPlay_V40");
     g_orig_StopRealPlay = (LPFN_NET_DVR_StopRealPlay)GetProcAddress(hSDK, "NET_DVR_StopRealPlay");
@@ -422,14 +452,20 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
         g_hookLogin.Hook();
         g_hookRealPlay.Hook();
         g_hookStopRealPlay.Hook();
+        WriteLog("[Init] Hikvision SDK hooks successfully installed!");
+    } else {
+        WriteLog("[Init] Error: GetProcAddress failed for SDK functions!");
     }
 
-    // Cài đặt WH_MOUSE hook cục bộ cho luồng giao diện chính của iVMS Lite
     if (g_mainThreadId != 0) {
         g_hMouseHook = SetWindowsHookEx(WH_MOUSE, MouseProc, NULL, g_mainThreadId);
+        if (g_hMouseHook) {
+            WriteLog("[Init] WH_MOUSE Hook successfully installed on main UI thread: " + std::to_string(g_mainThreadId));
+        } else {
+            WriteLog("[Init] Error: Failed to install WH_MOUSE Hook. Error code: " + std::to_string(GetLastError()));
+        }
     }
 
-    // Khởi chạy thread giám sát hotkey
     CreateThread(NULL, 0, HotkeyMonitorThread, NULL, 0, NULL);
     return 0;
 }
@@ -444,10 +480,10 @@ LPTSTR WINAPI Hooked_GetCommandLineW() {
     g_hookGetCommandLineW.Unhook();
     LPTSTR result = g_orig_GetCommandLineW();
     
-    // Khởi tạo luồng cài đặt hook một cách an sau khi thoát khỏi Loader Lock
     if (!g_isInitialized) {
         g_isInitialized = true;
-        g_mainThreadId = GetCurrentThreadId(); // Lấy đúng ID luồng UI chính tại đây!
+        g_mainThreadId = GetCurrentThreadId();
+        WriteLog("[Init] Delay Load Hook Triggered. Main UI Thread ID: " + std::to_string(g_mainThreadId));
         CreateThread(NULL, 0, HookInitThread, NULL, 0, NULL);
     }
     return result;
@@ -456,25 +492,35 @@ LPTSTR WINAPI Hooked_GetCommandLineW() {
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
+            // Xóa file log cũ khi tiến trình bắt đầu nạp lại DLL
+            std::ofstream logFile("F:\\ivms\\ivmslite\\popout_patch.log", std::ios::trunc);
+            logFile.close();
+
+            WriteLog("[DLL] DllMain: DLL_PROCESS_ATTACH called.");
             DisableThreadLibraryCalls(hModule);
 
-            // Hook hàm GetCommandLineW để trì hoãn khởi tạo, tránh Loader Lock Deadlock
             HMODULE hKernel = GetModuleHandleA("kernel32.dll");
             g_orig_GetCommandLineW = (LPFN_GetCommandLineW)GetProcAddress(hKernel, "GetCommandLineW");
             if (g_orig_GetCommandLineW) {
                 g_hookGetCommandLineW.Setup((void*)g_orig_GetCommandLineW, (void*)Hooked_GetCommandLineW);
                 g_hookGetCommandLineW.Hook();
+                WriteLog("[DLL] Setup Delay Hook on GetCommandLineW successfully.");
+            } else {
+                WriteLog("[DLL] Error: Failed to get address of GetCommandLineW.");
             }
             break;
         }
         case DLL_PROCESS_DETACH: {
+            WriteLog("[DLL] DllMain: DLL_PROCESS_DETACH called.");
             g_hookGetCommandLineW.Unhook();
             if (g_hMouseHook) {
                 UnhookWindowsHookEx(g_hMouseHook);
+                WriteLog("[DLL] WH_MOUSE hook uninstalled.");
             }
             g_hookLogin.Unhook();
             g_hookRealPlay.Unhook();
             g_hookStopRealPlay.Unhook();
+            WriteLog("[DLL] Hooks uninstalled successfully.");
             break;
         }
     }
