@@ -56,7 +56,7 @@ bool InjectDLL(DWORD processId, const std::wstring& dllPath) {
     return true;
 }
 
-int wmain(int argc, wchar_t* argv[]) {
+int main() {
     std::wcout << L"========================================" << std::endl;
     std::wcout << L"   iVMS-4200 Lite Popout Launcher v2.0  " << std::endl;
     std::wcout << L"========================================" << std::endl;
