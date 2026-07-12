@@ -434,18 +434,17 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
     HMODULE hSDK = NULL;
     HMODULE hPlay = NULL;
 
-    // Chờ SDK nạp hoàn chỉnh (tối đa 10 giây)
-    int retry = 0;
-    while ((!hSDK || !hPlay) && retry < 100) {
+    // Chờ SDK nạp hoàn chỉnh (chờ vô hạn, không giới hạn timeout vì SDK chỉ được nạp khi iVMS Lite mở Live View)
+    int msWaited = 0;
+    while (!hSDK || !hPlay) {
         hSDK = GetModuleHandleA("HCNetSDK.dll");
         hPlay = GetModuleHandleA("PlayCtrl.dll");
         Sleep(100);
-        retry++;
-    }
-
-    if (!hSDK || !hPlay) {
-        WriteLog("[Init] Error: HCNetSDK.dll or PlayCtrl.dll not loaded in time!");
-        return 0;
+        msWaited += 100;
+        if (msWaited >= 5000) { // Cứ 5 giây ghi log 1 lần để báo trạng thái chờ
+            WriteLog("[Init] Still waiting for HCNetSDK.dll and PlayCtrl.dll...");
+            msWaited = 0;
+        }
     }
 
     WriteLog("[Init] SDK loaded. Installing Inline Hooks...");
