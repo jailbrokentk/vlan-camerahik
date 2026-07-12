@@ -48,9 +48,6 @@ hcnet-addon/package-lock.json
 
 # OpenClaw / AutoClaw agent workspace files
 .openclaw/
-.openclaw-attachments/
-memory/
-evolution-drafts/
 AGENTS.md
 SOUL.md
 USER.md
@@ -58,7 +55,3 @@ IDENTITY.md
 TOOLS.md
 HEARTBEAT.md
 *_PROMPT.md
-
-# User research directories
-ivmslite/
-ivmspro/
