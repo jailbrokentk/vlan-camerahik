@@ -29,6 +29,7 @@ target_link_libraries(BitrateLauncher PRIVATE
     user32
     kernel32
     advapi32
+    shlwapi
 )
 if(MSVC)
     set_target_properties(BitrateLauncher PROPERTIES

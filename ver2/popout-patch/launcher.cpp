@@ -1,58 +1,50 @@
 #include <windows.h>
 #include <iostream>
 #include <string>
-#include <tlhelp32.h>
+#include <shlwapi.h>
 
-// Hàm inject DLL vào một tiến trình Win32
-bool InjectDLL(DWORD processId, const std::wstring& dllPath) {
-    HANDLE hProcess = OpenProcess(PROCESS_ALL_ACCESS, FALSE, processId);
-    if (!hProcess) {
-        std::wcerr << L"[Launcher] Failed to open target process. Error: " << GetLastError() << std::endl;
-        return false;
-    }
+// Hàm thực hiện tiêm DLL vào tiến trình đích
+bool InjectDLL(HANDLE hProcess, const std::wstring& dllPath) {
+    size_t dllPathSize = (dllPath.length() + 1) * sizeof(wchar_t);
 
-    // Cấp phát bộ nhớ cho đường dẫn DLL bên trong không gian tiến trình đích
-    size_t size = (dllPath.length() + 1) * sizeof(wchar_t);
-    LPVOID pDllPath = VirtualAllocEx(hProcess, NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+    // Cấp phát bộ nhớ trong tiến trình đích để ghi đường dẫn DLL
+    LPVOID pDllPath = VirtualAllocEx(hProcess, NULL, dllPathSize, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
     if (!pDllPath) {
-        std::wcerr << L"[Launcher] Failed to allocate memory in target process. Error: " << GetLastError() << std::endl;
-        CloseHandle(hProcess);
+        std::wcerr << L"[Error] VirtualAllocEx failed. Error code: " << GetLastError() << std::endl;
         return false;
     }
 
-    // Ghi đường dẫn DLL vào không gian nhớ vừa cấp phát
-    if (!WriteProcessMemory(hProcess, pDllPath, dllPath.c_str(), size, NULL)) {
-        std::wcerr << L"[Launcher] Failed to write memory in target process. Error: " << GetLastError() << std::endl;
+    // Ghi đường dẫn DLL vào vùng nhớ vừa cấp phát
+    if (!WriteProcessMemory(hProcess, pDllPath, dllPath.c_str(), dllPathSize, NULL)) {
+        std::wcerr << L"[Error] WriteProcessMemory failed. Error code: " << GetLastError() << std::endl;
         VirtualFreeEx(hProcess, pDllPath, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
         return false;
     }
 
-    // Lấy địa chỉ hàm LoadLibraryW trong kernel32.dll
+    // Lấy địa chỉ của hàm LoadLibraryW trong kernel32.dll
     LPTHREAD_START_ROUTINE pLoadLibrary = (LPTHREAD_START_ROUTINE)GetProcAddress(
-        GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW");
+        GetModuleHandleW(L"kernel32.dll"), "LoadLibraryW"
+    );
     if (!pLoadLibrary) {
-        std::wcerr << L"[Launcher] Failed to get LoadLibraryW address." << std::endl;
+        std::wcerr << L"[Error] GetProcAddress for LoadLibraryW failed. Error code: " << GetLastError() << std::endl;
         VirtualFreeEx(hProcess, pDllPath, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
         return false;
     }
 
-    // Tạo luồng từ xa để gọi LoadLibraryW nạp DLL của chúng ta
+    // Tạo luồng từ xa để gọi LoadLibraryW trong tiến trình đích
     HANDLE hThread = CreateRemoteThread(hProcess, NULL, 0, pLoadLibrary, pDllPath, 0, NULL);
     if (!hThread) {
-        std::wcerr << L"[Launcher] Failed to create remote thread. Error: " << GetLastError() << std::endl;
+        std::wcerr << L"[Error] CreateRemoteThread failed. Error code: " << GetLastError() << std::endl;
         VirtualFreeEx(hProcess, pDllPath, 0, MEM_RELEASE);
-        CloseHandle(hProcess);
         return false;
     }
 
-    // Chờ luồng thực thi xong
+    // Chờ luồng tiêm DLL thực thi xong
     WaitForSingleObject(hThread, INFINITE);
 
+    // Dọn dẹp tài nguyên
     CloseHandle(hThread);
     VirtualFreeEx(hProcess, pDllPath, 0, MEM_RELEASE);
-    CloseHandle(hProcess);
     return true;
 }
 
@@ -61,32 +53,29 @@ int main() {
     std::wcout << L"   iVMS-4200 Lite Popout Launcher v2.0  " << std::endl;
     std::wcout << L"========================================" << std::endl;
 
-    // Tìm thư mục hiện tại để xác định vị trí của iVMS_Popout.dll
-    wchar_t currentDir[MAX_PATH];
-    GetModuleFileNameW(NULL, currentDir, MAX_PATH);
-    std::wstring dirPath(currentDir);
-    size_t lastSlash = dirPath.find_last_of(L"\\/");
-    if (lastSlash != std::wstring::npos) {
-        dirPath = dirPath.substr(0, lastSlash);
-    }
+    // Lấy đường dẫn thư mục hiện tại của Launcher
+    wchar_t buffer[MAX_PATH];
+    GetModuleFileNameW(NULL, buffer, MAX_PATH);
+    std::wstring exePath(buffer);
+    std::wstring dirPath = exePath.substr(0, exePath.find_last_of(L"\\/"));
+
+    // Xác định đường dẫn file iVMS-4200 Lite.exe và iVMS_Popout.dll
+    std::wstring appPath = dirPath + L"\\iVMS-4200 Lite.exe";
     std::wstring dllPath = dirPath + L"\\iVMS_Popout.dll";
 
-    // Đường dẫn mặc định của iVMS-4200 Lite
-    // Nếu Launcher được đặt cùng thư mục cài đặt iVMS-4200 Lite, ta dùng exe cùng thư mục.
-    // Ngược lại, thử tìm trong thư mục cài đặt mặc định Program Files.
-    std::wstring targetExe = L"iVMS-4200 Lite.exe";
-    std::wstring appPath = dirPath + L"\\" + targetExe;
-
-    DWORD fileAttr = GetFileAttributesW(appPath.c_str());
-    if (fileAttr == INVALID_FILE_ATTRIBUTES) {
-        // Thử tìm trong Program Files (x86) và Program Files
-        std::wstring programFilesX86 = L"C:\\Program Files (x86)\\iVMS-4200 Site\\iVMS-4200 Portal\\iVMS-4200 Lite.exe";
-        std::wstring programFilesStandard = L"C:\\Program Files\\iVMS-4200 Site\\iVMS-4200 Portal\\iVMS-4200 Lite.exe";
+    // Nếu không tìm thấy trong thư mục hiện tại, kiểm tra đường dẫn cài đặt mặc định
+    if (!PathFileExistsW(appPath.c_str())) {
+        std::wstring defaultPath1 = L"C:\\Program Files (x86)\\iVMS-4200 Site\\iVMS-4200 Portal\\iVMS-4200 Lite.exe";
+        std::wstring defaultPath2 = L"C:\\Program Files\\iVMS-4200 Site\\iVMS-4200 Portal\\iVMS-4200 Lite.exe";
         
-        if (GetFileAttributesW(programFilesX86.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            appPath = programFilesX86;
-        } else if (GetFileAttributesW(programFilesStandard.c_str()) != INVALID_FILE_ATTRIBUTES) {
-            appPath = programFilesStandard;
+        if (PathFileExistsW(defaultPath1.c_str())) {
+            appPath = defaultPath1;
+            dirPath = L"C:\\Program Files (x86)\\iVMS-4200 Site\\iVMS-4200 Portal";
+            dllPath = dirPath + L"\\iVMS_Popout.dll";
+        } else if (PathFileExistsW(defaultPath2.c_str())) {
+            appPath = defaultPath2;
+            dirPath = L"C:\\Program Files\\iVMS-4200 Site\\iVMS-4200 Portal";
+            dllPath = dirPath + L"\\iVMS_Popout.dll";
         } else {
             std::wcerr << L"[Error] Cannot find iVMS-4200 Lite.exe. Please copy this Launcher to the iVMS-4200 Lite installation directory." << std::endl;
             system("pause");
@@ -100,7 +89,7 @@ int main() {
     std::wcout << L"[Launcher] Working Dir: " << appDir << std::endl;
     std::wcout << L"[Launcher] Patch DLL: " << dllPath << std::endl;
 
-    // Khởi động iVMS-4200 Lite ở chế độ SUSPENDED (treo) để inject DLL trước khi nó chạy code chính
+    // Khởi động iVMS-4200 Lite ở chế độ bình thường (không suspend) để Windows Loader nạp các DLL hệ thống trước
     STARTUPINFOW si = { sizeof(si) };
     PROCESS_INFORMATION pi = { 0 };
 
@@ -110,7 +99,7 @@ int main() {
         NULL,
         NULL,
         FALSE,
-        CREATE_SUSPENDED,
+        0, // Chạy bình thường
         NULL,
         appDir.c_str(), // Thiết lập Working Directory chính xác của ứng dụng con
         &si,
@@ -118,26 +107,30 @@ int main() {
     );
 
     if (!success) {
-        std::wcerr << L"[Error] Failed to start iVMS-4200 Lite. Error: " << GetLastError() << std::endl;
+        std::wcerr << L"[Error] CreateProcessW failed. Error code: " << GetLastError() << std::endl;
         system("pause");
         return 1;
     }
 
-    std::wcout << L"[Launcher] Process created suspended. PID: " << pi.dwProcessId << std::endl;
+    std::wcout << L"[Launcher] Process created. PID: " << pi.dwProcessId << std::endl;
 
-    // Inject DLL vào tiến trình vừa tạo
-    if (InjectDLL(pi.dwProcessId, dllPath)) {
-        std::wcout << L"[Launcher] Patch DLL injected successfully!" << std::endl;
-    } else {
-        std::wcerr << L"[Warning] DLL Injection failed. iVMS Lite will start without Popout Panel." << std::endl;
+    // Đợi 300ms để Windows Loader nạp hoàn tất kernel32.dll trong tiến trình đích trước khi inject
+    Sleep(300);
+
+    // Tiến hành tiêm DLL vào tiến trình đang chạy
+    if (!InjectDLL(pi.hProcess, dllPath)) {
+        std::wcerr << L"[Error] DLL Injection failed!" << std::endl;
+        TerminateProcess(pi.hProcess, 0);
+        CloseHandle(pi.hProcess);
+        CloseHandle(pi.hThread);
+        system("pause");
+        return 1;
     }
 
-    // Đánh thức tiến trình để bắt đầu chạy
-    ResumeThread(pi.hThread);
+    std::wcout << L"[Launcher] Patch DLL injected successfully!" << std::endl;
 
-    CloseHandle(pi.hThread);
     CloseHandle(pi.hProcess);
-
+    CloseHandle(pi.hThread);
     std::wcout << L"[Launcher] Launch complete." << std::endl;
     return 0;
 }
