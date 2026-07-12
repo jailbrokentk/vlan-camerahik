@@ -42,6 +42,18 @@ bool InjectDLL(HANDLE hProcess, const std::wstring& dllPath) {
     // Chờ luồng tiêm DLL thực thi xong
     WaitForSingleObject(hThread, INFINITE);
 
+    // Lấy Exit Code của thread (chính là kết quả trả về của LoadLibraryW)
+    DWORD exitCode = 0;
+    GetExitCodeThread(hThread, &exitCode);
+    std::wcout << L"[Launcher] Thread Exit Code (HMODULE): 0x" << std::hex << exitCode << std::dec << std::endl;
+
+    if (exitCode == 0) {
+        std::wcerr << L"[Error] LoadLibraryW in target process returned NULL (failed to load DLL)." << std::endl;
+        CloseHandle(hThread);
+        VirtualFreeEx(hProcess, pDllPath, 0, MEM_RELEASE);
+        return false;
+    }
+
     // Dọn dẹp tài nguyên
     CloseHandle(hThread);
     VirtualFreeEx(hProcess, pDllPath, 0, MEM_RELEASE);

@@ -7,6 +7,9 @@
 #include <fstream>
 #include <iomanip>
 
+// Handle module của DLL patch
+HINSTANCE g_hModule = NULL;
+
 // Hàm ghi log file để debug quá trình thực thi
 void WriteLog(const std::string& message) {
     std::ofstream logFile("F:\\ivms\\ivmslite\\popout_patch.log", std::ios::app);
@@ -283,9 +286,8 @@ void OpenPopoutWindow(const DeviceInfo& dev, const StreamInfo& stream) {
     WriteLog("[Popout] Started parallel preview. Handle: " + std::to_string(player->previewHandle));
 }
 
-// Global variables cho Message Hook & Thread ID
+// Global variables cho Mouse Hook
 HHOOK g_hMouseHook = NULL;
-DWORD g_mainThreadId = 0;
 bool g_isSimulatingRightClick = false;
 
 // Thread function để reset flag giả lập click chuột phải
@@ -432,10 +434,18 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
     HMODULE hSDK = NULL;
     HMODULE hPlay = NULL;
 
-    while (!hSDK || !hPlay) {
+    // Chờ SDK nạp hoàn chỉnh (tối đa 10 giây)
+    int retry = 0;
+    while ((!hSDK || !hPlay) && retry < 100) {
         hSDK = GetModuleHandleA("HCNetSDK.dll");
         hPlay = GetModuleHandleA("PlayCtrl.dll");
         Sleep(100);
+        retry++;
+    }
+
+    if (!hSDK || !hPlay) {
+        WriteLog("[Init] Error: HCNetSDK.dll or PlayCtrl.dll not loaded in time!");
+        return 0;
     }
 
     WriteLog("[Init] SDK loaded. Installing Inline Hooks...");
@@ -457,12 +467,13 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
         WriteLog("[Init] Error: GetProcAddress failed for SDK functions!");
     }
 
-    if (g_mainThreadId != 0) {
-        g_hMouseHook = SetWindowsHookEx(WH_MOUSE, MouseProc, NULL, g_mainThreadId);
+    // Đăng ký WH_MOUSE hook cục bộ cho toàn bộ các thread trong tiến trình hiện tại
+    if (g_hModule != NULL) {
+        g_hMouseHook = SetWindowsHookEx(WH_MOUSE, MouseProc, g_hModule, 0);
         if (g_hMouseHook) {
-            WriteLog("[Init] WH_MOUSE Hook successfully installed on main UI thread: " + std::to_string(g_mainThreadId));
+            WriteLog("[Init] WH_MOUSE Hook successfully installed on all threads.");
         } else {
-            WriteLog("[Init] Error: Failed to install WH_MOUSE Hook. Error code: " + std::to_string(GetLastError()));
+            WriteLog("[Init] Error: Failed to install WH_MOUSE Hook. Error: " + std::to_string(GetLastError()));
         }
     }
 
@@ -470,49 +481,24 @@ DWORD WINAPI HookInitThread(LPVOID lpParam) {
     return 0;
 }
 
-// Cấu trúc Hook GetCommandLineW trì hoãn (Loader Lock Bypass)
-typedef LPTSTR(WINAPI* LPFN_GetCommandLineW)();
-LPFN_GetCommandLineW g_orig_GetCommandLineW = nullptr;
-InlineHook g_hookGetCommandLineW;
-bool g_isInitialized = false;
-
-LPTSTR WINAPI Hooked_GetCommandLineW() {
-    g_hookGetCommandLineW.Unhook();
-    LPTSTR result = g_orig_GetCommandLineW();
-    
-    if (!g_isInitialized) {
-        g_isInitialized = true;
-        g_mainThreadId = GetCurrentThreadId();
-        WriteLog("[Init] Delay Load Hook Triggered. Main UI Thread ID: " + std::to_string(g_mainThreadId));
-        CreateThread(NULL, 0, HookInitThread, NULL, 0, NULL);
-    }
-    return result;
-}
-
 BOOL APIENTRY DllMain(HMODULE hModule, DWORD ul_reason_for_call, LPVOID lpReserved) {
     switch (ul_reason_for_call) {
         case DLL_PROCESS_ATTACH: {
-            // Xóa file log cũ khi tiến trình bắt đầu nạp lại DLL
+            g_hModule = hModule;
+
+            // Khởi tạo/xóa file log cũ khi tiến trình bắt đầu nạp lại DLL
             std::ofstream logFile("F:\\ivms\\ivmslite\\popout_patch.log", std::ios::trunc);
             logFile.close();
 
             WriteLog("[DLL] DllMain: DLL_PROCESS_ATTACH called.");
             DisableThreadLibraryCalls(hModule);
 
-            HMODULE hKernel = GetModuleHandleA("kernel32.dll");
-            g_orig_GetCommandLineW = (LPFN_GetCommandLineW)GetProcAddress(hKernel, "GetCommandLineW");
-            if (g_orig_GetCommandLineW) {
-                g_hookGetCommandLineW.Setup((void*)g_orig_GetCommandLineW, (void*)Hooked_GetCommandLineW);
-                g_hookGetCommandLineW.Hook();
-                WriteLog("[DLL] Setup Delay Hook on GetCommandLineW successfully.");
-            } else {
-                WriteLog("[DLL] Error: Failed to get address of GetCommandLineW.");
-            }
+            // Khởi chạy trực tiếp HookInitThread để hook SDK và đăng ký mouse hook
+            CreateThread(NULL, 0, HookInitThread, NULL, 0, NULL);
             break;
         }
         case DLL_PROCESS_DETACH: {
             WriteLog("[DLL] DllMain: DLL_PROCESS_DETACH called.");
-            g_hookGetCommandLineW.Unhook();
             if (g_hMouseHook) {
                 UnhookWindowsHookEx(g_hMouseHook);
                 WriteLog("[DLL] WH_MOUSE hook uninstalled.");
